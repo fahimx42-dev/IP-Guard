@@ -1,0 +1,351 @@
+name: Build IP Guardian APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-apk.yml"
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Generate IP Guardian Android project
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/ipguardian/app
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "IP Guardian"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.7.3" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
+          android {
+              namespace = "com.ipguardian.app"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.ipguardian.app"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              buildFeatures { compose = true }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+              implementation("androidx.activity:activity-compose:1.10.0")
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-tooling-preview")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material-icons-extended")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+              debugImplementation("androidx.compose.ui:ui-tooling")
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:allowBackup="false"
+                  android:label="IP Guardian"
+                  android:theme="@android:style/Theme.Material.NoActionBar"
+                  android:usesCleartextTraffic="false">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/ipguardian/app/MainActivity.kt <<'EOF'
+          package com.ipguardian.app
+
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.foundation.text.KeyboardOptions
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.Search
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.input.KeyboardType
+          import androidx.compose.ui.text.input.PasswordVisualTransformation
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.launch
+          import kotlinx.coroutines.withContext
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+
+          private val Bg = Color(0xFF07111F)
+          private val Panel = Color(0xFF101F32)
+          private val Mint = Color(0xFF38E0B5)
+          private val Muted = Color(0xFF9FB2C8)
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent { GuardianApp() }
+              }
+          }
+
+          @Composable
+          fun GuardianApp() {
+              var apiKey by remember { mutableStateOf("") }
+              var ip by remember { mutableStateOf("8.8.8.8") }
+              var report by remember { mutableStateOf<JSONObject?>(null) }
+              var error by remember { mutableStateOf("") }
+              var loading by remember { mutableStateOf(false) }
+              val scope = rememberCoroutineScope()
+
+              MaterialTheme(colorScheme = darkColorScheme(
+                  background = Bg, surface = Panel, primary = Mint,
+                  onBackground = Color.White, onSurface = Color.White
+              )) {
+                  Column(
+                      Modifier.fillMaxSize().background(Bg)
+                          .verticalScroll(rememberScrollState()).padding(20.dp),
+                      verticalArrangement = Arrangement.spacedBy(14.dp)
+                  ) {
+                      Text("IP GUARDIAN", color = Mint, fontSize = 26.sp, fontWeight = FontWeight.Black)
+                      Text("IP intelligence • Shodan host lookup", color = Muted, fontSize = 13.sp)
+                      Card(colors = CardDefaults.cardColors(containerColor = Panel),
+                          shape = RoundedCornerShape(18.dp)) {
+                          Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                              Text("SHODAN API KEY", color = Mint, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                              OutlinedTextField(
+                                  value = apiKey, onValueChange = { apiKey = it },
+                                  modifier = Modifier.fillMaxWidth(), singleLine = true,
+                                  placeholder = { Text("Paste your own Shodan API key") },
+                                  visualTransformation = PasswordVisualTransformation(),
+                                  keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                              )
+                              Text("IP ADDRESS", color = Mint, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                              OutlinedTextField(
+                                  value = ip, onValueChange = { ip = it.trim() },
+                                  modifier = Modifier.fillMaxWidth(), singleLine = true,
+                                  placeholder = { Text("e.g. 8.8.8.8") },
+                                  keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii)
+                              )
+                              Button(
+                                  onClick = {
+                                      report = null
+                                      error = ""
+                                      loading = true
+                                      scope.launch {
+                                          try {
+                                              report = withContext(Dispatchers.IO) {
+                                                  ShodanClient.lookup(ip, apiKey)
+                                              }
+                                          } catch (e: Exception) {
+                                              error = e.message ?: "Lookup failed"
+                                          } finally {
+                                              loading = false
+                                          }
+                                      }
+                                  },
+                                  enabled = !loading && apiKey.isNotBlank() && ip.isNotBlank(),
+                                  modifier = Modifier.fillMaxWidth().height(50.dp)
+                              ) {
+                                  if (loading) CircularProgressIndicator(
+                                      Modifier.size(18.dp), color = Bg, strokeWidth = 2.dp
+                                  ) else Icon(Icons.Default.Search, contentDescription = null)
+                                  Spacer(Modifier.width(8.dp))
+                                  Text(if (loading) "Checking…" else "ANALYZE IP", fontWeight = FontWeight.Bold)
+                              }
+                              Text(
+                                  "Only analyze IP addresses you own or are authorized to assess. " +
+                                      "Shodan observations may be incomplete or outdated.",
+                                  color = Muted, fontSize = 11.sp
+                              )
+                          }
+                      }
+                      if (error.isNotBlank()) {
+                          Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1D2A))) {
+                              Text(error, Modifier.padding(14.dp), color = Color(0xFFFFB4C0))
+                          }
+                      }
+                      report?.let { ResultPanel(it) }
+                      Text("IP Guardian • Version 1.0", color = Muted, fontSize = 11.sp,
+                          modifier = Modifier.align(Alignment.CenterHorizontally))
+                  }
+              }
+          }
+
+          @Composable
+          private fun ResultPanel(data: JSONObject) {
+              val ports = data.optJSONArray("ports")
+              val hosts = data.optJSONArray("hostnames")
+              val domains = data.optJSONArray("domains")
+              val vulns = data.optJSONObject("vulns")
+              val services = data.optJSONArray("data")
+              Card(colors = CardDefaults.cardColors(containerColor = Panel),
+                  shape = RoundedCornerShape(18.dp)) {
+                  Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                      Text("SCAN RESULT", color = Mint, fontWeight = FontWeight.Bold)
+                      InfoLine("IP", data.optString("ip_str"))
+                      InfoLine("Country", data.optString("country_name", "N/A"))
+                      InfoLine("City", data.optString("city", "N/A"))
+                      InfoLine("Organization", data.optString("org", "N/A"))
+                      InfoLine("ISP", data.optString("isp", "N/A"))
+                      InfoLine("ASN", data.optString("asn", "N/A"))
+                      InfoLine("OS", data.optString("os", "N/A"))
+                      InfoLine("Hostnames", arrayText(hosts))
+                      InfoLine("Domains", arrayText(domains))
+                      InfoLine("Open ports", arrayText(ports))
+                      InfoLine("Vulnerability IDs",
+                          vulns?.keys()?.asSequence()?.toList()?.joinToString(", ") ?: "None reported")
+                      HorizontalDivider(color = Color(0xFF294057))
+                      Text("OBSERVED SERVICES", color = Mint, fontWeight = FontWeight.Bold)
+                      if (services == null || services.length() == 0) {
+                          Text("No service banners returned.", color = Muted)
+                      } else {
+                          for (i in 0 until minOf(services.length(), 30)) {
+                              val item = services.optJSONObject(i) ?: continue
+                              Text(
+                                  "${item.optInt("port")}/${item.optString("transport", "unknown")} • " +
+                                      "${item.optString("product", "Unknown")} ${item.optString("version", "")}",
+                                  color = Color.White, fontSize = 13.sp
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun InfoLine(label: String, value: String) {
+              Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                  Text(label, color = Muted, fontSize = 12.sp, modifier = Modifier.weight(0.38f))
+                  Text(value.ifBlank { "N/A" }, color = Color.White, fontSize = 12.sp,
+                      modifier = Modifier.weight(0.62f))
+              }
+          }
+
+          private fun arrayText(array: org.json.JSONArray?): String {
+              if (array == null || array.length() == 0) return "N/A"
+              return (0 until array.length()).joinToString(", ") { array.optString(it) }
+          }
+
+          private object ShodanClient {
+              fun lookup(ip: String, key: String): JSONObject {
+                  require(ip.matches(Regex("^[0-9a-fA-F:.]{2,45}$"))) {
+                      "Enter a valid IPv4 or IPv6 address."
+                  }
+                  require(key.length >= 10) { "Enter your Shodan API key." }
+                  val url = URL("https://api.shodan.io/shodan/host/$ip?key=$key")
+                  val connection = (url.openConnection() as HttpURLConnection).apply {
+                      requestMethod = "GET"
+                      connectTimeout = 15000
+                      readTimeout = 20000
+                      setRequestProperty("Accept", "application/json")
+                  }
+                  try {
+                      val code = connection.responseCode
+                      val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                      val body = stream.bufferedReader().use { it.readText() }
+                      if (code !in 200..299) {
+                          val message = try {
+                              JSONObject(body).optString("error", "Shodan HTTP $code")
+                          } catch (_: Exception) {
+                              "Shodan HTTP $code"
+                          }
+                          throw IllegalStateException(message)
+                      }
+                      return JSONObject(body)
+                  } finally {
+                      connection.disconnect()
+                  }
+              }
+          }
+          EOF
+
+      - name: Build debug APK
+        run: gradle assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IP-Guardian-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
